@@ -77,39 +77,52 @@ function drawAnn(ctx, a, W, H) {
   }
 }
 
-/* ---------- трекинг ---------- */
-function trackPos(tr, t) {
-  const k = tr.keys; if (!k.length) return null
-  if (t <= k[0].t) return k.length === 1 ? k[0] : (t < k[0].t - 0.5 ? null : k[0])
-  if (t >= k[k.length - 1].t) return t > k[k.length - 1].t + 0.5 ? null : k[k.length - 1]
-  for (let i = 0; i < k.length - 1; i++) {
-    if (t >= k[i].t && t <= k[i + 1].t) {
-      const f = (t - k[i].t) / (k[i + 1].t - k[i].t || 1)
-      return { x: k[i].x + (k[i + 1].x - k[i].x) * f, y: k[i].y + (k[i + 1].y - k[i].y) * f }
+/* ---------- авто-трекинг (template matching по SAD) ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+// поиск нового положения шаблона cv в текущем кадре sample-канваса
+function searchTrack(sctx, cv, PW, PH) {
+  const S = Math.max(8, Math.round(PW * 0.045)), tw = cv.tw, th = cv.th
+  let x0 = clamp(Math.round(cv.x) - (tw >> 1) - S, 0, PW - tw)
+  let y0 = clamp(Math.round(cv.y) - (th >> 1) - S, 0, PH - th)
+  let rw = Math.min(tw + 2 * S, PW - x0), rh = Math.min(th + 2 * S, PH - y0)
+  if (rw < tw || rh < th) return
+  const reg = sctx.getImageData(x0, y0, rw, rh).data, tpl = cv.tpl
+  const maxdx = rw - tw, maxdy = rh - th
+  let best = Infinity, bx = cv.x, by = cv.y
+  for (let dy = 0; dy <= maxdy; dy += 2) {
+    for (let dx = 0; dx <= maxdx; dx += 2) {
+      let sad = 0
+      for (let ty = 0; ty < th && sad < best; ty += 2) {
+        const rrow = (dy + ty) * rw, trow = ty * tw
+        for (let tx = 0; tx < tw; tx += 2) {
+          const ri = (rrow + dx + tx) << 2, ti = (trow + tx) << 2
+          sad += Math.abs(reg[ri] - tpl[ti]) + Math.abs(reg[ri + 1] - tpl[ti + 1]) + Math.abs(reg[ri + 2] - tpl[ti + 2])
+          if (sad >= best) break
+        }
+      }
+      if (sad < best) { best = sad; bx = x0 + dx + (tw >> 1); by = y0 + dy + (th >> 1) }
     }
   }
-  return k[k.length - 1]
-}
-function drawTrack(ctx, tr, W, H, t, editing) {
-  const R = Math.min(W, H) * 0.05
-  if (editing && tr.keys.length > 1) {
-    ctx.save(); ctx.strokeStyle = tr.color; ctx.globalAlpha = .35; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5
-    ctx.beginPath(); tr.keys.forEach((k, i) => i ? ctx.lineTo(k.x * W, k.y * H) : ctx.moveTo(k.x * W, k.y * H)); ctx.stroke(); ctx.restore()
+  cv.x = bx; cv.y = by
+  // лёгкая адаптация шаблона, чтобы пережить смену ракурса (10%)
+  if (best < cv.tpl.length * 16) {
+    const patch = sctx.getImageData(clamp(bx - (tw >> 1), 0, PW - tw), clamp(by - (th >> 1), 0, PH - th), tw, th).data
+    for (let i = 0; i < tpl.length; i++) tpl[i] = (tpl[i] * 9 + patch[i]) / 10
   }
-  if (editing) tr.keys.forEach(k => { ctx.save(); ctx.fillStyle = tr.color; ctx.beginPath(); ctx.arc(k.x * W, k.y * H, 3.5, 0, 7); ctx.fill(); ctx.restore() })
-  const p = trackPos(tr, t); if (!p) return
-  const cx = p.x * W, cy = p.y * H
+}
+function drawRing(ctx, color, label, cx, cy, R, active) {
   ctx.save()
+  ctx.globalAlpha = active ? 1 : 0.4
   ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke()
-  ctx.strokeStyle = tr.color; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke()
-  ctx.fillStyle = tr.color; ctx.globalAlpha = .12; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill(); ctx.globalAlpha = 1
-  // подпись
-  if (tr.label) {
-    ctx.font = `700 ${Math.round(R * 0.55)}px -apple-system, Arial`
-    const tw = ctx.measureText(tr.label).width
-    ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(cx - tw / 2 - 5, cy - R - R * 0.85, tw + 10, R * 0.78)
+  ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke()
+  ctx.fillStyle = color; ctx.globalAlpha = active ? .14 : .06; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill()
+  ctx.globalAlpha = active ? 1 : 0.5
+  if (label) {
+    ctx.font = `700 ${Math.round(R * 0.5)}px -apple-system, Arial`
+    const tw = ctx.measureText(label).width
+    ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(cx - tw / 2 - 6, cy - R - R * 0.92, tw + 12, R * 0.78)
     ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center'
-    ctx.fillText(tr.label, cx, cy - R - R * 0.45)
+    ctx.fillText(label, cx, cy - R - R * 0.52)
   }
   ctx.restore()
 }
@@ -188,7 +201,8 @@ function Modal({ title, children, onClose, onSubmit }) {
 /* ====================================================== EDITOR */
 function Editor({ project, onBack }) {
   const videoRef = useRef(null), overlayRef = useRef(null), fileRef = useRef(null)
-  const draft = useRef(null), trackDrag = useRef(null)
+  const draft = useRef(null)
+  const sampleRef = useRef(null), trackCV = useRef({}), proc = useRef({ w: 480, h: 270 }), procLastT = useRef(-1)
 
   const [src, setSrc] = useState(null)
   const [tool, setTool] = useState('arrow')
@@ -224,26 +238,47 @@ function Editor({ project, onBack }) {
   useEffect(() => { window.addEventListener('resize', syncCanvas); return () => window.removeEventListener('resize', syncCanvas) }, [syncCanvas])
   useEffect(() => { const id = requestAnimationFrame(syncCanvas); return () => cancelAnimationFrame(id) }, [sideW, bottomH, src, syncCanvas])
 
-  /* ---- живой рендер overlay (анимации/трекинг в реальном времени) ---- */
+  /* ---- покадровый апдейт авто-трекинга ---- */
+  const updateTracks = useCallback(() => {
+    const v = videoRef.current, sc = sampleRef.current; if (!v || !sc || v.readyState < 2) return
+    const { w: PW, h: PH } = proc.current
+    const sctx = sc.getContext('2d', { willReadFrequently: true })
+    let any = false
+    for (const t of tracks) { const cv = trackCV.current[t.id]; if (cv && t.active) { any = true; break } }
+    if (!any) return
+    sctx.drawImage(v, 0, 0, PW, PH)
+    for (const t of tracks) { const cv = trackCV.current[t.id]; if (cv && t.active) searchTrack(sctx, cv, PW, PH) }
+  }, [tracks])
+
+  /* ---- живой рендер overlay (инфографика + авто-трекинг) ---- */
   useEffect(() => {
     let raf
     const tick = () => {
       const v = videoRef.current, c = overlayRef.current
       if (v && c) {
+        if (v.currentTime !== procLastT.current) { procLastT.current = v.currentTime; updateTracks() }
         const ctx = c.getContext('2d'); ctx.clearRect(0, 0, c.width, c.height)
         anns.forEach(a => drawAnn(ctx, a, c.width, c.height))
-        tracks.forEach(tr => drawTrack(ctx, tr, c.width, c.height, v.currentTime, tool === 'track' && tr.id === activeTrack))
+        const { w: PW, h: PH } = proc.current
+        tracks.forEach(tr => { const cv = trackCV.current[tr.id]; if (cv) drawRing(ctx, tr.color, tr.label, (cv.x / PW) * c.width, (cv.y / PH) * c.height, Math.min(c.width, c.height) * 0.05, tr.active) })
         if (draft.current) drawAnn(ctx, draft.current, c.width, c.height)
         drawBrand(ctx, brand, c.width, c.height)
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick); return () => cancelAnimationFrame(raf)
-  }, [anns, tracks, tool, activeTrack, brand])
+  }, [anns, tracks, brand, updateTracks])
 
   /* ---- файл / видео ---- */
-  const loadFile = (f) => { if (!f) return; setSrc(URL.createObjectURL(f)); setAnns([]); setTracks([]); setFrags([]); setComments([]); setInT(null); setOutT(null) }
-  const onLoaded = () => { const v = videoRef.current; setDur(v.duration); v.playbackRate = speed; v.muted = muted; setTimeout(syncCanvas, 60) }
+  const loadFile = (f) => { if (!f) return; trackCV.current = {}; procLastT.current = -1; setSrc(URL.createObjectURL(f)); setAnns([]); setTracks([]); setActiveTrack(null); setFrags([]); setComments([]); setInT(null); setOutT(null) }
+  const onLoaded = () => {
+    const v = videoRef.current; setDur(v.duration); v.playbackRate = speed; v.muted = muted
+    const PW = 480, PH = Math.max(1, Math.round(PW * ((v.videoHeight / v.videoWidth) || 0.5)))
+    proc.current = { w: PW, h: PH }
+    if (!sampleRef.current) sampleRef.current = document.createElement('canvas')
+    sampleRef.current.width = PW; sampleRef.current.height = PH
+    setTimeout(syncCanvas, 60)
+  }
   const onTime = () => setCur(videoRef.current.currentTime)
   const playPause = () => { const v = videoRef.current; if (!v || !src) return; v.paused ? v.play() : v.pause() }
   const step = (d) => { const v = videoRef.current; if (!v) return; v.pause(); v.currentTime = Math.min(dur, Math.max(0, v.currentTime + d)) }
@@ -253,35 +288,34 @@ function Editor({ project, onBack }) {
 
   /* ---- ввод на overlay ---- */
   const pos = (e) => { const r = overlayRef.current.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height } }
-  const ensureTrackKey = (p) => {
-    let id = activeTrack
-    setTracks(prev => {
-      let arr = prev.map(t => ({ ...t, keys: [...t.keys] }))
-      if (!id) { id = uid(); arr.push({ id, color, label: 'Игрок ' + (arr.length + 1), keys: [] }) }
-      const tr = arr.find(t => t.id === id); const i = tr.keys.findIndex(k => Math.abs(k.t - cur) < 0.06)
-      const k = { t: cur, x: p.x, y: p.y }; if (i >= 0) tr.keys[i] = k; else tr.keys.push(k); tr.keys.sort((a, b) => a.t - b.t)
-      return arr
-    })
-    if (id !== activeTrack) setActiveTrack(id); return id
+  const startTrack = (p) => {
+    const v = videoRef.current, sc = sampleRef.current; if (!v || !sc) return
+    const { w: PW, h: PH } = proc.current
+    const sctx = sc.getContext('2d', { willReadFrequently: true }); sctx.drawImage(v, 0, 0, PW, PH)
+    const tw = clamp(Math.round(PW * 0.075), 16, 44), th = tw
+    const px = clamp(Math.round(p.x * PW), tw, PW - tw), py = clamp(Math.round(p.y * PH), th, PH - th)
+    const tpl = Float32Array.from(sctx.getImageData(px - (tw >> 1), py - (th >> 1), tw, th).data)
+    const id = uid()
+    trackCV.current[id] = { tpl, tw, th, x: px, y: py }
+    setTracks(s => [...s, { id, color, label: 'Игрок ' + (s.length + 1), active: true }]); setActiveTrack(id)
   }
   const down = (e) => {
     if (!src || tool === 'select') return
     const p = pos(e)
-    if (tool === 'track') { const id = ensureTrackKey(p); trackDrag.current = { id, t: cur }; return }
+    if (tool === 'track') { startTrack(p); return }
     draft.current = tool === 'pen' ? { id: uid(), type: 'pen', color, width, pts: [p] } : { id: uid(), type: tool, color, width, a: p, b: p }
   }
   const move = (e) => {
-    if (trackDrag.current) { const p = pos(e), { id, t } = trackDrag.current
-      setTracks(prev => prev.map(tr => tr.id !== id ? tr : { ...tr, keys: tr.keys.map(k => Math.abs(k.t - t) < 0.06 ? { ...k, x: p.x, y: p.y } : k) })); return }
     if (!draft.current) return; const p = pos(e)
     if (draft.current.type === 'pen') draft.current.pts.push(p); else draft.current.b = p
   }
   const up = () => {
-    if (trackDrag.current) { trackDrag.current = null; return }
     if (!draft.current) return; const d = draft.current; draft.current = null
     const tiny = d.type !== 'pen' && Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) < 0.012
     if (!tiny) setAnns(s => [...s, d])
   }
+  const toggleTrack = (id) => setTracks(s => s.map(t => t.id === id ? { ...t, active: !t.active } : t))
+  const delTrack = (id) => { delete trackCV.current[id]; setTracks(s => s.filter(t => t.id !== id)) }
   const undo = () => setAnns(s => s.slice(0, -1))
   const clearAnns = () => setAnns([])
 
@@ -328,7 +362,8 @@ function Editor({ project, onBack }) {
     const loop = () => {
       ctx.drawImage(v, 0, 0, W, H)
       aSet.forEach(an => drawAnn(ctx, an, W, H))
-      tracks.forEach(tr => drawTrack(ctx, tr, W, H, v.currentTime, false))
+      const { w: PW, h: PH } = proc.current
+      tracks.forEach(tr => { const cv = trackCV.current[tr.id]; if (cv) drawRing(ctx, tr.color, tr.label, (cv.x / PW) * W, (cv.y / PH) * H, Math.min(W, H) * 0.05, tr.active) })
       drawBrand(ctx, brand, W, H)
       if (v.currentTime < end && !v.ended) requestAnimationFrame(loop); else { v.pause(); mr.stop() }
     }
@@ -409,19 +444,19 @@ function Editor({ project, onBack }) {
                   </div> }))}
 
               {tab === 'track' && <>
-                <button className="btn primary sm" style={{ width: '100%', marginBottom: 12, justifyContent: 'center' }} onClick={() => { setTool('track'); setActiveTrack(null) }}>+ Новый трек игрока</button>
+                <button className={`btn sm ${tool === 'track' ? 'primary' : ''}`} style={{ width: '100%', marginBottom: 12, justifyContent: 'center' }} onClick={() => setTool('track')}>Инструмент «Трекинг» (5)</button>
                 <div className="empty-note" style={{ padding: '4px 0 14px', textAlign: 'left' }}>
-                  Инструмент «Трекинг» (5): кликните по игроку — поставится ключевой кадр. Перемотайте дальше и кликните по новой позиции — кольцо будет следовать за игроком (интерполяция между кадрами).
+                  Авто-трекинг: включите инструмент «Трекинг» и кликните по игроку — кольцо само поедет за ним при воспроизведении, пока вы не выключите. Можно вести нескольких игроков. Лучше работает на чётком Full HD.
                 </div>
                 {tracks.length === 0 ? <div className="empty-note">Треков пока нет.</div>
-                  : tracks.map(tr => <div className={`card-item ${tr.id === activeTrack ? '' : ''}`} key={tr.id}
-                      style={{ borderColor: tr.id === activeTrack ? tr.color : 'var(--line)' }} onClick={() => { setActiveTrack(tr.id); setTool('track') }}>
+                  : tracks.map(tr => <div className="card-item" key={tr.id} style={{ borderColor: tr.active ? tr.color : 'var(--line)' }}>
                       <div className="ft"><span className="dot" style={{ background: tr.color }} />
                         <input className="input" style={{ padding: '3px 7px', height: 26, background: 'transparent', border: 0 }} value={tr.label}
-                          onClick={e => e.stopPropagation()} onChange={e => setTracks(s => s.map(x => x.id === tr.id ? { ...x, label: e.target.value } : x))} />
+                          onChange={e => setTracks(s => s.map(x => x.id === tr.id ? { ...x, label: e.target.value } : x))} />
                       </div>
-                      <div className="fm">{tr.keys.length} ключевых кадров {tr.id === activeTrack && <b style={{ color: tr.color }}>· активен</b>}
-                        <button className="btn ghost sm" style={{ marginLeft: 'auto', padding: '2px 7px' }} onClick={e => { e.stopPropagation(); setTracks(s => s.filter(x => x.id !== tr.id)) }}>удалить</button></div>
+                      <div className="fm">{tr.active ? <b style={{ color: tr.color }}>● трекинг идёт</b> : 'остановлен'}
+                        <button className="btn ghost sm" style={{ marginLeft: 'auto', padding: '2px 7px' }} onClick={() => toggleTrack(tr.id)}>{tr.active ? 'выключить' : 'включить'}</button>
+                        <button className="btn ghost sm" style={{ padding: '2px 7px' }} onClick={() => delTrack(tr.id)}>удалить</button></div>
                     </div>)}
               </>}
 
