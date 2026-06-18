@@ -174,6 +174,24 @@ function Editor({ project, onBack }) {
   const [rec, setRec] = useState(false)
   const [cmtText, setCmtText] = useState('')
 
+  /* ---- размеры панелей (резиновые) ---- */
+  const [sideW, setSideW] = useState(320)
+  const [bottomH, setBottomH] = useState(168)
+  const dragSide = (e) => {
+    e.preventDefault()
+    const move = (ev) => setSideW(Math.min(620, Math.max(240, window.innerWidth - ev.clientX)))
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.style.userSelect = '' }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+  const dragBottom = (e) => {
+    e.preventDefault()
+    const move = (ev) => setBottomH(Math.min(460, Math.max(120, window.innerHeight - ev.clientY)))
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.style.userSelect = '' }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
   /* ---- размер overlay под видео ---- */
   const syncCanvas = useCallback(() => {
     const v = videoRef.current, c = overlayRef.current
@@ -194,6 +212,8 @@ function Editor({ project, onBack }) {
     window.addEventListener('resize', syncCanvas)
     return () => window.removeEventListener('resize', syncCanvas)
   }, [syncCanvas])
+  // пересчёт overlay при ресайзе панелей
+  useEffect(() => { const id = requestAnimationFrame(syncCanvas); return () => cancelAnimationFrame(id) }, [sideW, bottomH, syncCanvas])
 
   /* ---- загрузка файла ---- */
   const loadFile = (f) => {
@@ -343,6 +363,7 @@ function Editor({ project, onBack }) {
       </div>
 
       <div className="editor">
+       <div className="editor-main">
         {/* tools */}
         <div className="tools">
           {TOOLS.map((t, i) => (
@@ -379,8 +400,9 @@ function Editor({ project, onBack }) {
           )}
         </div>
 
+        <div className="gutter-v" onMouseDown={dragSide} title="Потяните, чтобы изменить ширину панели" />
         {/* side */}
-        <div className="side">
+        <div className="side" style={{ width: sideW }}>
           <div className="tabs">
             <button className={tab === 'frags' ? 'active' : ''} onClick={() => setTab('frags')}>Фрагменты</button>
             <button className={tab === 'cmt' ? 'active' : ''} onClick={() => setTab('cmt')}>Комментарии</button>
@@ -440,8 +462,10 @@ function Editor({ project, onBack }) {
           </div>
         </div>
 
+       </div>{/* /editor-main */}
+        <div className="gutter-h" onMouseDown={dragBottom} title="Потяните, чтобы изменить высоту панели" />
         {/* transport */}
-        <div className="transport">
+        <div className="transport" style={{ height: bottomH }}>
           <div className="tl" onClick={seekRatio}>
             {frags.map((f) => {
               const t = TAGS.find((x) => x.id === f.tag)
